@@ -25,12 +25,14 @@ const DEFAULTS = {
 
   // 夫婦別（couple）
   husband: {
-    income: 600, savings: 400, contribution: 250000,
+    age: 35, income: 600, incomeAt60: 900, retirementIncome: 300,
+    savings: 400, contribution: 250000,
     nisaInit: 100, nisaMonthly: 50000, nisaGrowth: 4,
     costs: [{ label: "お小遣い・個人費", value: 40000 }],
   },
   wife: {
-    income: 400, savings: 400, contribution: 150000,
+    age: 33, income: 400, incomeAt60: 550, retirementIncome: 200,
+    savings: 400, contribution: 150000,
     nisaInit: 100, nisaMonthly: 30000, nisaGrowth: 4,
     costs: [{ label: "お小遣い・個人費", value: 30000 }],
   },
@@ -67,7 +69,7 @@ function sanitizeCosts(raw, fallback) {
 function sanitizePerson(raw, def) {
   const p = clone(def);
   if (raw && typeof raw === "object") {
-    for (const k of ["income", "savings", "contribution", "nisaInit", "nisaMonthly", "nisaGrowth"]) {
+    for (const k of ["age", "income", "incomeAt60", "retirementIncome", "savings", "contribution", "nisaInit", "nisaMonthly", "nisaGrowth"]) {
       if (typeof raw[k] === "number" && isFinite(raw[k])) p[k] = raw[k];
     }
     p.costs = sanitizeCosts(raw.costs, def.costs);
@@ -97,7 +99,8 @@ function decodeState(str) {
   catch (e) { return null; }
 }
 
-const LS_KEY = "mansion-sim:v3";
+const LS_KEY = "mansion-sim:v4";
+const TAKE_HOME = 0.76; // 手取り率（額面に対する概算）
 function loadState() {
   const hash = location.hash.replace(/^#/, "");
   if (hash) { const h = decodeState(hash); if (h) return h; }
@@ -127,7 +130,7 @@ function loanCalc(s) {
 
 function computeSingle(s) {
   const L = loanCalc(s);
-  const netMonthly = Math.round(((s.income1 + s.income2) * 10000 / 12) * 0.78);
+  const netMonthly = Math.round(((s.income1 + s.income2) * 10000 / 12) * TAKE_HOME);
   const livingCost = sum(s.costs);
   const totalOut = L.housing + livingCost + (Number(s.nisaMonthly) || 0);
   const balance = netMonthly - totalOut;
@@ -135,13 +138,38 @@ function computeSingle(s) {
   return { ...L, netMonthly, livingCost, totalOut, balance, burdenRate };
 }
 
+// 年齢a時点の額面年収（万円）。現在→60歳は直線、60〜70歳は定年後年収で一定、70歳以降は0
+function incomeAtAge(p, a) {
+  if (a >= 70) return 0;
+  if (a >= 60) return Number(p.retirementIncome) || 0;
+  if (p.age >= 60) return Number(p.retirementIncome) || 0;
+  if (a <= p.age) return p.income;
+  const t = (a - p.age) / (60 - p.age);
+  return p.income + ((Number(p.incomeAt60) || 0) - p.income) * t;
+}
+
 function personCalc(p) {
-  const net = Math.round((p.income * 10000 / 12) * 0.78);
+  const net = Math.round((incomeAtAge(p, p.age) * 10000 / 12) * TAKE_HOME);
   const personalCosts = sum(p.costs);
   const contribution = Number(p.contribution) || 0;
   const nisaMonthly = Number(p.nisaMonthly) || 0;
   const out = contribution + personalCosts + nisaMonthly;
   return { net, personalCosts, contribution, nisaMonthly, out, balance: net - out };
+}
+
+// 目標年齢時点での貯金・NISA（万円）。年収推移を踏まえ月次で積み上げ
+function assetsAtAge(p, targetAge) {
+  const pc = personCalc(p);
+  let sav = p.savings * 10000, nisa = p.nisaInit * 10000;
+  const g = p.nisaGrowth / 100 / 12;
+  const months = Math.max(0, Math.round((targetAge - p.age) * 12));
+  for (let m = 0; m < months; m++) {
+    const a = p.age + m / 12;
+    const net = Math.round((incomeAtAge(p, a) * 10000 / 12) * TAKE_HOME);
+    sav += net - pc.out;
+    nisa = nisa * (1 + g) + pc.nisaMonthly;
+  }
+  return { sav: Math.round(sav / 10000), nisa: Math.round(nisa / 10000), reached: months > 0 };
 }
 
 function computeCouple(s) {
@@ -184,9 +212,12 @@ function projectCouple(s, c) {
       hhSav: Math.round(hhSav / 10000),
     });
     for (let m = 0; m < 12; m++) {
+      const aH = s.husband.age + y + m / 12, aW = s.wife.age + y + m / 12;
+      const netH = Math.round((incomeAtAge(s.husband, aH) * 10000 / 12) * TAKE_HOME);
+      const netW = Math.round((incomeAtAge(s.wife, aW) * 10000 / 12) * TAKE_HOME);
       bal = Math.max(0, bal * (1 + r) - c.monthlyLoan);
-      hSav += c.h.balance; hNisa = hNisa * (1 + hg) + c.h.nisaMonthly;
-      wSav += c.w.balance; wNisa = wNisa * (1 + wg) + c.w.nisaMonthly;
+      hSav += netH - c.h.out; hNisa = hNisa * (1 + hg) + c.h.nisaMonthly;
+      wSav += netW - c.w.out; wNisa = wNisa * (1 + wg) + c.w.nisaMonthly;
       hhSav += c.hhBalance;
     }
   }
@@ -354,7 +385,11 @@ function personSection(key, name, color, tintSuffix, valCls, rangeCls) {
   const p = state[key];
   const sec = accordion({ title: name, tag: color, sub: true, tint: tintSuffix, open: key === "husband" });
   sec.body.append(
-    slider({ label: name + " 年収（額面）", min: 0, max: 2000, step: 10, fmt: fmtMan, rangeCls }, () => p.income, (v) => p.income = v, valCls),
+    slider({ label: name + " 現在の年齢", min: 22, max: 64, step: 1, fmt: (v) => v + "歳", rangeCls }, () => p.age, (v) => p.age = v, valCls),
+    slider({ label: "現在の年収（額面）", min: 0, max: 2000, step: 10, fmt: fmtMan, rangeCls }, () => p.income, (v) => p.income = v, valCls),
+    slider({ label: "60歳時点の想定年収（額面）", min: 0, max: 2500, step: 10, fmt: fmtMan, rangeCls }, () => p.incomeAt60, (v) => p.incomeAt60 = v, valCls),
+    slider({ label: "定年後の年収（60〜70歳・額面）", min: 0, max: 1500, step: 10, fmt: fmtMan, rangeCls }, () => p.retirementIncome, (v) => p.retirementIncome = v, valCls),
+    elh("p", "note", "年収は<b>現在→60歳まで直線的に推移</b>、<b>60〜70歳は定年後年収で一定</b>、70歳以降は0として試算します。"),
     slider({ label: "現在の貯蓄額", min: 0, max: 8000, step: 10, fmt: fmtMan, rangeCls }, () => p.savings, (v) => p.savings = v, valCls),
     sectionLabel("毎月の生活コスト"),
     elh("p", "note", "一番上の<b>「共通口座へ拠出」</b>は固定項目です。ここからローン・家庭の生活費がまかなわれます。"),
@@ -475,8 +510,9 @@ function renderBreakdown() {
   root.innerHTML = "";
   if (state.mode === "couple") {
     const c = computeCouple(state);
-    const card = elh("section", "card");
-    card.innerHTML = `<h2 class="block-title" style="font-size:14px;font-weight:700;margin:0 0 14px">月の収支内訳（3つの財布）</h2>
+    const acc = accordion({ title: "月の収支内訳（3つの財布）", open: false });
+    const card = acc.body;
+    card.innerHTML = `
       <div class="bd-block">
         <div class="bd-head"><i style="background:var(--home)"></i>家庭（共通口座）</div>
         <div class="rows">${bdRows([
@@ -507,11 +543,12 @@ function renderBreakdown() {
           { label: "妻の収支", val: c.w.balance, total: true, signed: true },
         ])}</div>
       </div>`;
-    root.append(card);
+    root.append(acc.acc);
   } else {
     const c = computeSingle(state);
-    const card = elh("section", "card");
-    card.innerHTML = `<h2 class="block-title" style="font-size:14px;font-weight:700;margin:0 0 12px">月の支出内訳</h2>
+    const acc = accordion({ title: "月の支出内訳", open: false });
+    const card = acc.body;
+    card.innerHTML = `
       <div class="rows">${bdRows([
         { label: "ローン返済", val: c.monthlyLoan },
         { label: "管理費・修繕積立等", val: c.mgmtFee },
@@ -520,7 +557,7 @@ function renderBreakdown() {
       ]).replace(/−¥/g, "¥")}
       ${`<div class="row total"><span>支出合計</span><span class="row-val">${yen(c.totalOut)}</span></div>
          <div class="row"><span>世帯手取り</span><span class="row-val">${yen(c.netMonthly)}</span></div>`}</div>`;
-    root.append(card);
+    root.append(acc.acc);
   }
 }
 
@@ -538,15 +575,17 @@ function yLabel(v) {
 
 let charts = []; // {draw}
 
-function createChart(parent, title, tagColor, series) {
+function createChart(parent, title, tagColor, series, statHtml) {
   const card = elh("section", "card chart-card");
   const h = elh("h2", "chart-title", (tagColor ? `<span class="tag" style="background:${tagColor}"></span>` : "") + title);
+  card.append(h);
+  if (statHtml) card.append(elh("div", "chart-stat", statHtml));
   const legend = elh("div", "legend", series.map((s) => `<span class="legend-item"><i style="background:${s.color}"></i>${s.name}</span>`).join(""));
   const wrap = elh("div", "chart-wrap");
   const svg = svgEl("svg", { viewBox: `0 0 ${VB_W} ${VB_H}`, preserveAspectRatio: "none", class: "chart-svg", role: "img", "aria-label": title });
   const tip = elh("div", "chart-tip"); tip.hidden = true;
   wrap.append(svg, tip);
-  card.append(h, legend, wrap);
+  card.append(legend, wrap);
   parent.append(card);
 
   let data = [], geom = null, focus = null;
@@ -606,7 +645,7 @@ function createChart(parent, title, tagColor, series) {
   svg.addEventListener("mousemove", move); svg.addEventListener("mouseleave", leave);
   svg.addEventListener("touchmove", move, { passive: true }); svg.addEventListener("touchend", leave);
 
-  return { draw };
+  return { draw, statEl: statHtml ? card.querySelector(".chart-stat") : null };
 }
 
 function renderCharts() {
@@ -617,14 +656,20 @@ function renderCharts() {
       { key: "loanRemain", name: "ローン残債", color: "#e5484d" },
       { key: "hhSav", name: "家庭の貯金", color: "var(--home)" },
     ]));
-    charts.push(createChart(root, "夫の資産", "var(--husband)", [
+    const stat60 = (p) => { const a = assetsAtAge(p, 60); return `60歳時点 ▸ 貯金 <b>${man(a.sav)}</b>・NISA <b style="color:var(--nisa)">${man(a.nisa)}</b>`; };
+    const hChart = createChart(root, "夫の資産", "var(--husband)", [
       { key: "hSav", name: "貯金", color: "var(--husband)" },
       { key: "hNisa", name: "NISA資産", color: "var(--nisa)" },
-    ]));
-    charts.push(createChart(root, "妻の資産", "var(--wife)", [
+    ], stat60(state.husband));
+    const wChart = createChart(root, "妻の資産", "var(--wife)", [
       { key: "wSav", name: "貯金", color: "var(--wife)" },
       { key: "wNisa", name: "NISA資産", color: "var(--nisa)" },
-    ]));
+    ], stat60(state.wife));
+    charts.push(hChart, wChart);
+    liveRefs.push({ refresh: () => {
+      if (hChart.statEl) hChart.statEl.innerHTML = stat60(state.husband);
+      if (wChart.statEl) wChart.statEl.innerHTML = stat60(state.wife);
+    } });
   } else {
     charts.push(createChart(root, "資産とローンの推移", null, [
       { key: "loanRemain", name: "ローン残債", color: "#e5484d" },

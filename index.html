@@ -18,16 +18,6 @@
       <p class="lede">価格を動かすと、夫・妻・家庭それぞれの家計と将来の資産がその場で更新されます。</p>
     </header>
 
-    <!-- 価格（常に表示） -->
-    <section class="card price-card">
-      <div class="price-head">
-        <label for="price" class="price-label">マンション価格</label>
-        <output id="price-value" class="price-value">5,000万円</output>
-      </div>
-      <input id="price" type="range" min="2000" max="15000" step="10" value="5000" class="range range--lg" aria-describedby="price-value" />
-      <div class="price-scale"><span>2,000万</span><span>1.5億</span></div>
-    </section>
-
     <!-- モード切替 -->
     <div class="mode-toggle" role="tablist" aria-label="計算モード">
       <button id="mode-couple" class="mode-btn" role="tab" type="button">夫婦別（3つの財布）</button>
@@ -41,8 +31,19 @@
     <!-- 詳細設定（JSが描画：ネスト折りたたみ） -->
     <div id="details-root"></div>
 
-    <!-- 支出内訳（JSが描画） -->
+    <!-- 支出内訳（JSが描画：折りたたみ） -->
     <div id="breakdown-root"></div>
+
+    <!-- 価格（グラフ直上：動かして推移を確認） -->
+    <section class="card price-card">
+      <div class="price-head">
+        <label for="price" class="price-label">マンション価格</label>
+        <output id="price-value" class="price-value">5,000万円</output>
+      </div>
+      <input id="price" type="range" min="2000" max="15000" step="10" value="5000" class="range range--lg" aria-describedby="price-value" />
+      <div class="price-scale"><span>2,000万</span><span>1.5億</span></div>
+      <p class="price-hint">価格を動かすと、下のグラフがその場で変化します</p>
+    </section>
 
     <!-- グラフ（JSが描画） -->
     <div id="charts-root"></div>
@@ -55,7 +56,7 @@
     </section>
 
     <p class="disclaimer">
-      ※ 手取りは額面の約78%（社保・税の概算）、管理費・修繕積立金・諸費用は概算です。固定資産税・各種保険・ボーナス返済・住宅ローン控除等は含みません。NISA資産は想定成長率での単純計算で、運用成果を保証するものではありません。貯金は毎月の収支がそのまま積み上がる前提です（収支がマイナスだと貯金が減少します）。これは概算ツールであり、投資・融資の助言ではありません。実際の数値は金融機関やファイナンシャルプランナーにご確認ください。
+      ※ 手取りは額面の約76%（社保・税の概算／辛め設定）、管理費・修繕積立金・諸費用は概算です。固定資産税・各種保険・ボーナス返済・住宅ローン控除等は含みません。年収は現在→60歳まで直線的に推移し、60〜70歳は定年後年収、70歳以降は0として試算します。NISA資産は想定成長率での単純計算で、運用成果を保証するものではありません。貯金は毎月の収支がそのまま積み上がる前提です（収支がマイナスだと貯金が減少します）。これは概算ツールであり、投資・融資の助言ではありません。実際の数値は金融機関やファイナンシャルプランナーにご確認ください。
     </p>
   </main>
 
