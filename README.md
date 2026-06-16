@@ -2,7 +2,7 @@
 
 マンション価格を動かすと、月々の家計と将来の資産（ローン残債・貯金・NISA）がその場で更新される、ブラウザ完結のシミュレーターです。
 
-**▶ デモ:** _（GitHub Pages 公開後にURLをここに記載）_
+**▶ デモ:** https://yoichiro-ashibe-umu.github.io/-mansion-simulator/
 
 ## 特長
 
