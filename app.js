@@ -11,7 +11,7 @@ const DEFAULTS = {
   mode: "couple", // "couple" | "single"
 
   // 物件・ローン（共通）
-  price: 5000, down: 500, feeRate: 7, rate: 1.0, loanYears: 35,
+  price: 5000, down: 500, feeRate: 7, rate: 1.0, loanYears: 35, propertyTax: 15,
 
   // 世帯まとめ（single）
   income1: 600, income2: 400, savings: 800,
@@ -80,7 +80,7 @@ function sanitize(raw) {
   const s = clone(DEFAULTS);
   if (raw && typeof raw === "object") {
     if (raw.mode === "single" || raw.mode === "couple") s.mode = raw.mode;
-    for (const k of ["price", "down", "feeRate", "rate", "loanYears", "income1", "income2", "savings", "nisaInit", "nisaMonthly", "nisaGrowth"]) {
+    for (const k of ["price", "down", "feeRate", "rate", "loanYears", "propertyTax", "income1", "income2", "savings", "nisaInit", "nisaMonthly", "nisaGrowth"]) {
       if (typeof raw[k] === "number" && isFinite(raw[k])) s[k] = raw[k];
     }
     s.costs = sanitizeCosts(raw.costs, DEFAULTS.costs);
@@ -99,8 +99,9 @@ function decodeState(str) {
   catch (e) { return null; }
 }
 
-const LS_KEY = "mansion-sim:v4";
-const TAKE_HOME = 0.76; // 手取り率（額面に対する概算）
+const LS_KEY = "mansion-sim:v5";
+const TAKE_HOME = 0.76;       // 手取り率（額面に対する概算）
+const NISA_CAP = 18000000;    // NISA生涯投資枠（元本・1人あたり1,800万円）
 function loadState() {
   const hash = location.hash.replace(/^#/, "");
   if (hash) { const h = decodeState(hash); if (h) return h; }
@@ -124,18 +125,22 @@ function loanCalc(s) {
   let monthlyLoan = r === 0 ? loan / n : (loan * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1);
   monthlyLoan = Math.round(monthlyLoan) || 0;
   const mgmtFee = Math.round((s.price * 10000 * 0.0025) / 12) + 15000;
+  const propertyTaxMonthly = Math.round((Number(s.propertyTax) || 0) * 10000 / 12);
   const totalInterest = monthlyLoan * n - loan;
-  return { fee, loan, monthlyLoan, mgmtFee, housing: monthlyLoan + mgmtFee, totalInterest };
+  return { fee, loan, monthlyLoan, mgmtFee, propertyTaxMonthly, housing: monthlyLoan + mgmtFee + propertyTaxMonthly, totalInterest };
 }
+
+const NISA_CAP_HOUSEHOLD = NISA_CAP * 2; // 世帯まとめ＝2人分
 
 function computeSingle(s) {
   const L = loanCalc(s);
   const netMonthly = Math.round(((s.income1 + s.income2) * 10000 / 12) * TAKE_HOME);
   const livingCost = sum(s.costs);
-  const totalOut = L.housing + livingCost + (Number(s.nisaMonthly) || 0);
+  const nisaMonthly = (Number(s.nisaInit) || 0) * 10000 < NISA_CAP_HOUSEHOLD ? (Number(s.nisaMonthly) || 0) : 0;
+  const totalOut = L.housing + livingCost + nisaMonthly;
   const balance = netMonthly - totalOut;
   const burdenRate = netMonthly > 0 ? (L.housing / netMonthly) * 100 : 0;
-  return { ...L, netMonthly, livingCost, totalOut, balance, burdenRate };
+  return { ...L, netMonthly, livingCost, nisaMonthly, totalOut, balance, burdenRate };
 }
 
 // 年齢a時点の額面年収（万円）。現在→60歳は直線、60〜70歳は定年後年収で一定、70歳以降は0
@@ -152,22 +157,34 @@ function personCalc(p) {
   const net = Math.round((incomeAtAge(p, p.age) * 10000 / 12) * TAKE_HOME);
   const personalCosts = sum(p.costs);
   const contribution = Number(p.contribution) || 0;
-  const nisaMonthly = Number(p.nisaMonthly) || 0;
-  const out = contribution + personalCosts + nisaMonthly;
-  return { net, personalCosts, contribution, nisaMonthly, out, balance: net - out };
+  const nisaSet = Number(p.nisaMonthly) || 0;
+  // 開始時点で既に生涯枠超なら積立は0
+  const nisaMonthly = (Number(p.nisaInit) || 0) * 10000 < NISA_CAP ? nisaSet : 0;
+  const baseOut = contribution + personalCosts; // NISA以外の固定支出
+  const out = baseOut + nisaMonthly;
+  return { net, personalCosts, contribution, nisaSet, nisaMonthly, baseOut, out, balance: net - out };
 }
 
-// 目標年齢時点での貯金・NISA（万円）。年収推移を踏まえ月次で積み上げ
+// NISA満額に達する年齢（達しない/即満額なら null/0）
+function nisaCapAge(p) {
+  const prin0 = (Number(p.nisaInit) || 0) * 10000, m = Number(p.nisaMonthly) || 0;
+  if (prin0 >= NISA_CAP) return p.age;
+  if (m <= 0) return null;
+  return p.age + Math.ceil((NISA_CAP - prin0) / m) / 12;
+}
+
+// 目標年齢時点での貯金・NISA（万円）。年収推移＋NISA生涯枠を踏まえ月次で積み上げ
 function assetsAtAge(p, targetAge) {
   const pc = personCalc(p);
-  let sav = p.savings * 10000, nisa = p.nisaInit * 10000;
-  const g = p.nisaGrowth / 100 / 12;
+  let sav = p.savings * 10000, nisa = p.nisaInit * 10000, prin = p.nisaInit * 10000;
+  const g = p.nisaGrowth / 100 / 12, set = pc.nisaSet;
   const months = Math.max(0, Math.round((targetAge - p.age) * 12));
   for (let m = 0; m < months; m++) {
     const a = p.age + m / 12;
     const net = Math.round((incomeAtAge(p, a) * 10000 / 12) * TAKE_HOME);
-    sav += net - pc.out;
-    nisa = nisa * (1 + g) + pc.nisaMonthly;
+    const c = prin < NISA_CAP ? Math.min(set, NISA_CAP - prin) : 0;
+    nisa = nisa * (1 + g) + c; prin += c;
+    sav += net - pc.baseOut - c; // 積立停止後は貯金へ
   }
   return { sav: Math.round(sav / 10000), nisa: Math.round(nisa / 10000), reached: months > 0 };
 }
@@ -187,11 +204,17 @@ function computeCouple(s) {
 // ---- 推移 ----
 function projectSingle(s, c) {
   const r = s.rate / 100 / 12, g = s.nisaGrowth / 100 / 12;
-  let bal = c.loan, cash = s.savings * 10000, nisa = s.nisaInit * 10000;
+  let bal = c.loan, cash = s.savings * 10000, nisa = s.nisaInit * 10000, prin = s.nisaInit * 10000;
+  const baseOut = c.housing + c.livingCost, set = Number(s.nisaMonthly) || 0;
   const data = [];
   for (let y = 0; y <= s.loanYears; y++) {
     data.push({ year: y, loanRemain: Math.max(0, Math.round(bal / 10000)), cash: Math.round(cash / 10000), nisa: Math.round(nisa / 10000) });
-    for (let m = 0; m < 12; m++) { bal = Math.max(0, bal * (1 + r) - c.monthlyLoan); cash += c.balance; nisa = nisa * (1 + g) + (Number(s.nisaMonthly) || 0); }
+    for (let m = 0; m < 12; m++) {
+      const ct = prin < NISA_CAP_HOUSEHOLD ? Math.min(set, NISA_CAP_HOUSEHOLD - prin) : 0;
+      bal = Math.max(0, bal * (1 + r) - c.monthlyLoan);
+      nisa = nisa * (1 + g) + ct; prin += ct;
+      cash += c.netMonthly - baseOut - ct;
+    }
   }
   return data;
 }
@@ -199,9 +222,10 @@ function projectCouple(s, c) {
   const r = s.rate / 100 / 12;
   const hg = s.husband.nisaGrowth / 100 / 12, wg = s.wife.nisaGrowth / 100 / 12;
   let bal = c.loan;
-  let hSav = s.husband.savings * 10000, hNisa = s.husband.nisaInit * 10000;
-  let wSav = s.wife.savings * 10000, wNisa = s.wife.nisaInit * 10000;
+  let hSav = s.husband.savings * 10000, hNisa = s.husband.nisaInit * 10000, hPrin = s.husband.nisaInit * 10000;
+  let wSav = s.wife.savings * 10000, wNisa = s.wife.nisaInit * 10000, wPrin = s.wife.nisaInit * 10000;
   let hhSav = s.household.savings * 10000;
+  const hSet = c.h.nisaSet, wSet = c.w.nisaSet;
   const data = [];
   for (let y = 0; y <= s.loanYears; y++) {
     data.push({
@@ -215,9 +239,11 @@ function projectCouple(s, c) {
       const aH = s.husband.age + y + m / 12, aW = s.wife.age + y + m / 12;
       const netH = Math.round((incomeAtAge(s.husband, aH) * 10000 / 12) * TAKE_HOME);
       const netW = Math.round((incomeAtAge(s.wife, aW) * 10000 / 12) * TAKE_HOME);
+      const hC = hPrin < NISA_CAP ? Math.min(hSet, NISA_CAP - hPrin) : 0;
+      const wC = wPrin < NISA_CAP ? Math.min(wSet, NISA_CAP - wPrin) : 0;
       bal = Math.max(0, bal * (1 + r) - c.monthlyLoan);
-      hSav += netH - c.h.out; hNisa = hNisa * (1 + hg) + c.h.nisaMonthly;
-      wSav += netW - c.w.out; wNisa = wNisa * (1 + wg) + c.w.nisaMonthly;
+      hNisa = hNisa * (1 + hg) + hC; hPrin += hC; hSav += netH - c.h.baseOut - hC;
+      wNisa = wNisa * (1 + wg) + wC; wPrin += wC; wSav += netW - c.w.baseOut - wC;
       hhSav += c.hhBalance;
     }
   }
@@ -332,6 +358,8 @@ function renderDetails() {
     slider({ label: "諸費用（物件価格に対する割合）", min: 3, max: 10, step: 0.5, fmt: fmtPct }, () => state.feeRate, (v) => state.feeRate = v),
     slider({ label: "住宅ローン金利（年）", min: 0.3, max: 4, step: 0.1, fmt: fmtPct }, () => state.rate, (v) => state.rate = v),
     slider({ label: "返済年数", min: 10, max: 40, step: 1, fmt: fmtYear }, () => state.loanYears, (v) => state.loanYears = v),
+    slider({ label: "固定資産税（年額）", min: 0, max: 50, step: 1, fmt: fmtMan }, () => state.propertyTax, (v) => state.propertyTax = v),
+    elh("p", "note", "固定資産税は新築マンションで<b>年10〜20万円</b>が目安（共通口座から支払い）。"),
     noteEl(() => { const L = loanCalc(state); return `借入額 <b>${man(L.loan / 10000)}</b>（諸費用込）／ 毎月返済 <b>${yen(L.monthlyLoan)}</b>／ 総利息 <b>${yen(L.totalInterest)}</b>`; })
   );
   body.append(loanSec.acc);
@@ -398,6 +426,12 @@ function personSection(key, name, color, tintSuffix, valCls, rangeCls) {
     slider({ label: "初期投資額", min: 0, max: 5000, step: 10, fmt: fmtMan, rangeCls }, () => p.nisaInit, (v) => p.nisaInit = v, valCls),
     slider({ label: "毎月の積立額", min: 0, max: 300000, step: 5000, fmt: yen, rangeCls }, () => p.nisaMonthly, (v) => p.nisaMonthly = v, valCls),
     slider({ label: "想定成長率（年）", min: 0, max: 10, step: 0.5, fmt: fmtPct, rangeCls }, () => p.nisaGrowth, (v) => p.nisaGrowth = v, valCls),
+    noteEl(() => {
+      const capAge = nisaCapAge(p);
+      if (capAge == null) return "毎月の積立が0のため、NISA生涯枠（1,800万円）には達しません。";
+      if (capAge <= p.age) return "NISAは既に生涯枠（1,800万円）に到達しています。";
+      return `NISAは約<b>${Math.round(capAge)}歳</b>で生涯枠（1,800万円）に到達 → 以降は積立を自動停止し、その分は貯金へ。`;
+    }),
     noteEl(() => { const pc = personCalc(p); return `手取り <b>${yen(pc.net)}</b> − 拠出 <b>${yen(pc.contribution)}</b> − 個人支出 <b>${yen(pc.personalCosts)}</b> − NISA <b>${yen(pc.nisaMonthly)}</b> → 収支 <b style="color:${pc.balance >= 0 ? "var(--pos)" : "var(--neg)"}">${signedYen(pc.balance)}</b>`; })
   );
   return sec.acc;
@@ -459,7 +493,7 @@ function renderSummary() {
         <div class="summary-secondary">
           <div class="summary-key">毎月のローン返済</div>
           <div class="summary-loan">${yen(c.monthlyLoan)}</div>
-          <div class="summary-sub">＋管理費等 ${yen(c.mgmtFee)}</div>
+          <div class="summary-sub">＋管理費・税等 ${yen(c.mgmtFee + c.propertyTaxMonthly)}</div>
         </div>
       </div>
       <div class="mini-row">
@@ -484,7 +518,7 @@ function renderSummary() {
         <div class="summary-secondary">
           <div class="summary-key">毎月のローン返済</div>
           <div class="summary-loan">${yen(c.monthlyLoan)}</div>
-          <div class="summary-sub">＋管理費等 ${yen(c.mgmtFee)}</div>
+          <div class="summary-sub">＋管理費・税等 ${yen(c.mgmtFee + c.propertyTaxMonthly)}</div>
         </div>
       </div>
       <div class="summary-foot">
@@ -502,7 +536,8 @@ function bdRows(rows) {
   return rows.map((r) => {
     const cls = r.total ? "row total" : (r.income ? "row income" : "row");
     const valCls = r.total ? ("row-val " + (r.val >= 0 ? "pos" : "neg")) : "row-val";
-    return `<div class="${cls}"><span>${r.label}</span><span class="${valCls}">${r.signed ? signedYen(r.val) : yen(r.val)}</span></div>`;
+    const txt = r.signed ? signedYen(r.val) : (r.val < 0 ? "−¥" + Math.abs(Math.round(r.val)).toLocaleString("ja-JP") : yen(r.val));
+    return `<div class="${cls}"><span>${r.label}</span><span class="${valCls}">${txt}</span></div>`;
   }).join("");
 }
 function renderBreakdown() {
@@ -519,6 +554,7 @@ function renderBreakdown() {
           { label: "夫＋妻の拠出", val: c.hhIncome, income: true },
           { label: "ローン返済", val: -c.monthlyLoan },
           { label: "管理費・修繕積立等", val: -c.mgmtFee },
+          { label: "固定資産税", val: -c.propertyTaxMonthly },
           { label: "家庭の生活費", val: -c.hhCosts },
           { label: "家庭の収支", val: c.hhBalance, total: true, signed: true },
         ])}</div>
@@ -552,8 +588,9 @@ function renderBreakdown() {
       <div class="rows">${bdRows([
         { label: "ローン返済", val: c.monthlyLoan },
         { label: "管理費・修繕積立等", val: c.mgmtFee },
+        { label: "固定資産税", val: c.propertyTaxMonthly },
         { label: "生活費合計", val: c.livingCost },
-        { label: "NISA積立", val: Number(state.nisaMonthly) || 0 },
+        { label: "NISA積立", val: c.nisaMonthly },
       ]).replace(/−¥/g, "¥")}
       ${`<div class="row total"><span>支出合計</span><span class="row-val">${yen(c.totalOut)}</span></div>
          <div class="row"><span>世帯手取り</span><span class="row-val">${yen(c.netMonthly)}</span></div>`}</div>`;
