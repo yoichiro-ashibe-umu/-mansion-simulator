@@ -2,9 +2,10 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>マンション購入シミュレーター</title>
-  <meta name="description" content="マンション価格から、月々の家計と資産の伸びをその場で計算。設定はURLで相方に共有できます。" />
+  <meta name="description" content="マンション価格から、夫・妻・家庭の3つの財布で月々の家計と将来の資産を計算。設定はURLで相方に共有できます。" />
+  <meta name="theme-color" content="#f5f6f8" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -14,7 +15,7 @@
   <main class="app">
     <header class="masthead">
       <h1>マンション購入シミュレーター</h1>
-      <p class="lede">マンション価格を動かすと、月々の家計と将来の資産がその場で更新されます。</p>
+      <p class="lede">価格を動かすと、夫・妻・家庭それぞれの家計と将来の資産がその場で更新されます。</p>
     </header>
 
     <!-- 価格（常に表示） -->
@@ -23,96 +24,28 @@
         <label for="price" class="price-label">マンション価格</label>
         <output id="price-value" class="price-value">5,000万円</output>
       </div>
-      <input id="price" type="range" min="2000" max="12000" step="10" value="5000" class="range range--lg" aria-describedby="price-value" />
-      <div class="price-scale"><span>2,000万</span><span>1.2億</span></div>
+      <input id="price" type="range" min="2000" max="15000" step="10" value="5000" class="range range--lg" aria-describedby="price-value" />
+      <div class="price-scale"><span>2,000万</span><span>1.5億</span></div>
     </section>
 
-    <!-- 結果サマリー（常に表示） -->
-    <section class="card summary" id="summary">
-      <div class="summary-grid">
-        <div class="summary-primary">
-          <div class="summary-key">毎月の収支<span class="muted"> 手取り − 支出 − NISA積立</span></div>
-          <div class="summary-balance" id="balance">+¥0</div>
-        </div>
-        <div class="summary-secondary">
-          <div class="summary-key">毎月のローン返済</div>
-          <div class="summary-loan" id="monthly-loan">¥0</div>
-          <div class="summary-sub" id="mgmt-note">＋管理費等 ¥0</div>
-        </div>
-      </div>
-      <div class="summary-foot">
-        <span>住居費の負担率 <b id="burden">0%</b><span class="muted"> 25%以下が目安・30%超は注意</span></span>
-        <span class="dot">·</span>
-        <span>諸費用 <b id="fee">0万円</b> をローンに組込</span>
-      </div>
-    </section>
+    <!-- モード切替 -->
+    <div class="mode-toggle" role="tablist" aria-label="計算モード">
+      <button id="mode-couple" class="mode-btn" role="tab" type="button">夫婦別（3つの財布）</button>
+      <button id="mode-single" class="mode-btn" role="tab" type="button">世帯まとめ</button>
+      <span class="mode-thumb" id="mode-thumb"></span>
+    </div>
 
-    <!-- 詳細設定（折りたたみ） -->
-    <details class="details" id="details">
-      <summary class="details-summary">
-        <span class="details-title">詳細設定</span>
-        <span class="details-hint">頭金・金利・年収・生活費・NISA など</span>
-        <svg class="chev" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </summary>
+    <!-- 結果サマリー（JSが描画） -->
+    <section class="card summary" id="summary"></section>
 
-      <div class="details-body">
-        <div class="columns">
-          <div class="col">
-            <div class="block">
-              <h2 class="block-title">物件とローン</h2>
-              <div class="sliders" data-group="loan"></div>
-              <p class="note" id="loan-note"></p>
-            </div>
+    <!-- 詳細設定（JSが描画：ネスト折りたたみ） -->
+    <div id="details-root"></div>
 
-            <div class="block">
-              <h2 class="block-title">夫婦の年収（額面）</h2>
-              <div class="sliders" data-group="income"></div>
-              <p class="note" id="income-note"></p>
-            </div>
+    <!-- 支出内訳（JSが描画） -->
+    <div id="breakdown-root"></div>
 
-            <div class="block">
-              <h2 class="block-title">初期貯蓄</h2>
-              <div class="sliders" data-group="savings"></div>
-            </div>
-          </div>
-
-          <div class="col">
-            <div class="block">
-              <h2 class="block-title">毎月の生活コスト</h2>
-              <div id="cost-list" class="cost-list"></div>
-              <button id="add-cost" class="btn-add" type="button">＋ 項目を追加</button>
-              <p class="note" id="cost-note"></p>
-            </div>
-
-            <div class="block">
-              <h2 class="block-title">NISA投資（別枠）</h2>
-              <div class="sliders" data-group="nisa"></div>
-              <p class="note" id="nisa-note"></p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </details>
-
-    <!-- 支出内訳 -->
-    <section class="card breakdown">
-      <h2 class="block-title">月の支出内訳</h2>
-      <div class="rows" id="breakdown-rows"></div>
-    </section>
-
-    <!-- グラフ -->
-    <section class="card chart-card">
-      <h2 class="block-title">資産とローンの推移</h2>
-      <div class="legend">
-        <span class="legend-item"><i style="background:#e5484d"></i>ローン残債</span>
-        <span class="legend-item"><i style="background:#3b6ef5"></i>貯金</span>
-        <span class="legend-item"><i style="background:#0fa968"></i>NISA資産</span>
-      </div>
-      <div class="chart-wrap" id="chart-wrap">
-        <svg id="chart" viewBox="0 0 720 280" preserveAspectRatio="none" role="img" aria-label="資産とローンの推移グラフ"></svg>
-        <div class="chart-tip" id="chart-tip" hidden></div>
-      </div>
-    </section>
+    <!-- グラフ（JSが描画） -->
+    <div id="charts-root"></div>
 
     <!-- 共有バー -->
     <section class="share">
@@ -122,7 +55,7 @@
     </section>
 
     <p class="disclaimer">
-      ※ 手取りは額面の約78%、管理費・修繕積立金・諸費用は概算です。固定資産税・保険・ボーナス返済等は含みません。NISA資産は想定成長率での単純計算で、運用成果を保証するものではありません。貯金グラフは毎月の収支がそのまま積み上がる前提です（収支がマイナスだと貯金が減少します）。これは概算ツールであり、投資・融資の助言ではありません。実際の数値は金融機関やファイナンシャルプランナーにご確認ください。
+      ※ 手取りは額面の約78%（社保・税の概算）、管理費・修繕積立金・諸費用は概算です。固定資産税・各種保険・ボーナス返済・住宅ローン控除等は含みません。NISA資産は想定成長率での単純計算で、運用成果を保証するものではありません。貯金は毎月の収支がそのまま積み上がる前提です（収支がマイナスだと貯金が減少します）。これは概算ツールであり、投資・融資の助言ではありません。実際の数値は金融機関やファイナンシャルプランナーにご確認ください。
     </p>
   </main>
 
